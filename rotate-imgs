@@ -1,0 +1,84 @@
+#!/bin/bash
+# 安装依赖: ImageMagick ffmpeg
+
+# 参数设置
+IMAGE="input.png"
+OUTPUT="frame_"
+DIRE=1
+FRAME=5
+START=0
+ANGLE=9
+BACKGROUND_COLOR="transparent"
+
+TEMP_DIR="temp_frames"
+
+help() {
+    echo "Usage:"
+    echo "$0 [-i input.png][-o output_]"
+    echo "[-c]逆时针旋转"
+    echo "[-f 5]帧数目"
+    echo "[-s 0]开始旋转角度"
+    echo "[-a 18]每帧旋转角度"
+    echo "[-b ffffff]背景色 不要加#"
+    exit -1
+}
+
+while getopts 'i:o:cf:s:a:b:' opt; do
+    case $opt in
+        i)
+            IMAGE="$OPTARG"
+            ;;
+        o)
+            OUTPUT="$OPTARG"
+            ;;
+        c)
+            DIRE=-1
+            ;;
+        f)
+            FRAME="$OPTARG"
+            ;;
+        s)
+            START="$OPTARG"
+            ;;
+        a)
+            ANGLE="$OPTARG"
+            ;;
+        b)
+            BACKGROUND_COLOR="#$OPTARG"
+            ;;
+        ?)
+            help
+            ;;
+    esac
+done
+
+if [ ! -f "$IMAGE" ]; then
+    echo "$IMAGE 文件不存在"
+    help
+fi
+
+echo "
+当前配置：
+IMAGE=$IMAGE
+OUTPUT=$OUTPUT
+DIRE=$DIRE
+FRAME=$FRAME
+START=$START
+ANGLE=$ANGLE
+BACKGROUND_COLOR=$BACKGROUND_COLOR
+TEMP_DIR=$TEMP_DIR
+"
+
+
+# 创建临时目录
+mkdir -p $TEMP_DIR
+
+# 旋转图像并生成帧
+for ((i=0; i<=FRAME; i++)); do
+    RANGLE=$((i * ANGLE * DIRE + START))
+    CNT=$((START / ANGLE))
+    magick $IMAGE -background $BACKGROUND_COLOR -rotate $RANGLE -gravity center -extent $(identify -format "%wx%h" $IMAGE) $TEMP_DIR/$OUTPUT$((i + CNT)).png
+done
+
+echo "
+已生成: $TEMP_DIR/$OUTPUT"
