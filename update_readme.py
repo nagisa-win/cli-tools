@@ -4,9 +4,10 @@ import os
 import re
 import openai
 from dotenv import load_dotenv
+import chardet
 
 CONTENT = ""
-CODE_PER_FILE = 100
+CODE_PER_FILE = 200
 
 def generate_file_tree():
     """Generate project file tree"""
@@ -43,16 +44,29 @@ def generate_ai_summary():
     for root, _, files in os.walk("."):
         if "bin" in root.split(os.sep):
             continue
+        if ".vscode" in root.split(os.sep):
+            continue
         for file in files:
-            if file.endswith((".py", ".sh", ".js")):  # Skip binary files
-                try:
-                    with open(os.path.join(root, file), "r", encoding='utf8') as f:
+            try:
+                filepath = os.path.join(root, file)
+                # First check common text file extensions
+                if file.endswith((".py", ".sh", ".js", ".md", ".txt")):
+                    is_text = True
+                else:
+                    # Fallback to content detection
+                    with open(filepath, "rb") as f:
+                        raw_data = f.read(1024)
+                        result = chardet.detect(raw_data)
+                        is_text = result["encoding"] is not None and result["confidence"] > 0.8
+
+                if is_text:
+                    with open(filepath, "r", encoding='utf8') as f:
                         content = f.read(1000)  # Read first 1000 chars
                         file_contents.append(f"{file}: {content[:CODE_PER_FILE]}...")
-                except Exception:
-                    continue
+            except Exception:
+                continue
 
-    prompt = f"""请简要总结这个代码项目的主要功能，包括主要代码文件结构、主要功能和使用方法。文件内容如下：
+    prompt = f"""请简要总结这个代码项目的主要功能，包括主要代码文件语言/类型/功能占比，简述重要文件主要功能和使用方法。文件内容如下：
     {file_contents}
     """
 

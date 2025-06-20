@@ -53,58 +53,107 @@ python update_readme.py
 
 ## 项目摘要
 <!--START AI Summary HERE-->
-这个代码项目包含多个独立的Python和Shell脚本工具，主要功能涉及图像处理、文件操作和项目维护。以下是主要总结：
+### 项目总结
+
+该项目是一个**命令行工具集合**，主要包含用于图像处理、文件操作和系统管理的脚本，语言以**Bash和Python**为主。
+
+#### 语言/类型占比
+- **Bash脚本**：约60%（如rotate、ncmdump、copy-my-file.sh等）
+- **Python脚本**：约35%（如pyinstxtractor.py、overlay.py等）
+- **配置文件/其他**：约5%（如.gitignore、LICENSE等）
 
 ---
 
-### **主要代码文件结构及功能**
-1. **图像处理工具**：
-   - `overlay.py`：图像叠加工具（使用PIL库处理多图叠加）
-   - `clip-img-color.py`：将图片中指定颜色转为透明（基于PIL）
-   - `make_gif_grid.py`：将GIF动画转换为网格布局的GIF（支持行列配置）
-   - `hdr_img.py`：HDR（高动态范围）图像处理工具（依赖PIL）
+### 重要文件及功能
 
-2. **PyInstaller相关工具**：
-   - `pyinstxtractor.py`：PyInstaller解包工具（支持提取PyInstaller 6.x打包的二进制文件）
+#### 1. **PyInstaller解包工具** (`pyinstxtractor.py`)
+- **功能**：提取PyInstaller打包的可执行文件中的Python源码，支持多个版本。
+- **使用**：  
+  ```bash
+  python pyinstxtractor.py <打包后的exe文件>
+  ```
 
-3. **项目维护工具**：
-   - `update_readme.py`：通过OpenAI API自动更新README文件（需配置API密钥）
-   - `copy-my-file.sh`：文件同步脚本（将指定目录文件同步到目标路径，如外接存储）
-   - `env.sh`：环境变量配置脚本（为项目设置系统环境变量）
+#### 2. **图像处理工具**
+- **overlay.py** (Python)  
+  - 功能：叠加两张图片（底图+覆盖图）  
+  - 使用：  
+    ```bash
+    python overlay.py -b 底图.png -o 覆盖图.png -r 输出.png
+    ```
+
+- **clip-img-color.py** (Python)  
+  - 功能：将图片中指定颜色转为透明  
+  - 使用：  
+    ```bash
+    python clip-img-color.py -i 输入.png -o 输出.png -c 255,255,255
+    ```
+
+- **rotate-imgs** (Bash)  
+  - 功能：生成旋转动画帧（依赖ImageMagick）  
+  - 使用：  
+    ```bash
+    ./rotate-imgs -i input.png -o frames_ -a 10
+    ```
+
+#### 3. **GIF相关工具**
+- **make_gif_grid.py** (Python)  
+  - 功能：将GIF分割为网格布局  
+  - 使用：  
+    ```bash
+    python make_gif_grid.py -i input.gif -o output.gif -c 3 -r 2
+    ```
+
+- **mkgif** (Bash)  
+  - 功能：将图片序列合成GIF（依赖ffmpeg）  
+  - 使用：  
+    ```bash
+    ./mkgif -d "frames_%d.png" -f 30 -o output.gif
+    ```
+
+#### 4. **文件操作工具**
+- **ncmdump** (Bash)  
+  - 功能：批量解密网易云音乐NCM格式文件  
+  - 使用：  
+    ```bash
+    ./ncmdump <音乐目录>
+    ```
+
+- **md5rename** (Bash)  
+  - 功能：用MD5哈希值重命名文件  
+  - 使用：  
+    ```bash
+    ./md5rename 文件.jpg
+    ```
+
+#### 5. **系统工具**
+- **copy-my-file.sh** (Bash)  
+  - 功能：备份指定目录/文件到外部存储  
+  - 使用：  
+    ```bash
+    ./copy-my-file.sh /目标/路径
+    ```
+
+- **env.sh** (Bash)  
+  - 功能：设置系统环境变量  
+  - 使用：  
+    ```bash
+    source env.sh
+    ```
+
+#### 6. **自动化工具**
+- **update_readme.py** (Python)  
+  - 功能：自动生成README.md（依赖OpenAI API）  
+  - 使用：  
+    ```bash
+    python update_readme.py
+    ```
 
 ---
 
-### **主要功能**
-- **图像处理**：支持透明化、GIF编辑、HDR处理和图像叠加。
-- **逆向工程**：解包PyInstaller生成的二进制文件。
-- **自动化维护**：README生成、文件同步和环境配置。
+### 其他说明
+- **依赖管理**：部分脚本需安装ImageMagick、ffmpeg、Pillow等库。
+- **许可证**：Apache 2.0（见LICENSE文件）。
+- **配置**：需在`.env`中设置OpenAI API密钥以使用README生成功能。
 
----
-
-### **使用方法**
-1. **图像工具**：
-   ```bash
-   python3 clip-img-color.py -i input.png -c "#FFFFFF" -o output.png  # 颜色透明化
-   python3 make_gif_grid.py input.gif output.gif --cols 2            # 生成网格GIF
-   ```
-2. **PyInstaller解包**：
-   ```bash
-   python3 pyinstxtractor.py packed_executable
-   ```
-3. **文件同步**：
-   ```bash
-   bash copy-my-file.sh  # 同步文件到默认路径（需配置SOURCE_LIST）
-   ```
-4. **README更新**：
-   ```bash
-   python3 update_readme.py  # 需提前配置OpenAI API密钥（.env文件）
-   ```
-
----
-
-### **依赖项**
-- Python库：`Pillow (PIL)`、`openai`、`python-dotenv`
-- 系统：部分脚本需Linux/macOS环境（如Shell脚本）。
-
-项目工具独立性强，可按需单独使用，适合开发者和图像处理场景。
+项目适合**开发者和系统管理员**快速处理图像、文件或自动化任务。
 <!--END AI Summary HERE-->
