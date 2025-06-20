@@ -1,0 +1,98 @@
+#!/bin/bash
+# 安装依赖: ImageMagick ffmpeg
+
+# 参数设置
+IMAGE="input.png"
+OUTPUT="output.gif"
+DIRE=1
+FRAME=30
+DIFF=2
+ZOOM="100%"
+TEMP_DIR="temp_frames"
+BACKGROUND_COLOR="transparent"
+
+help() {
+    echo "Usage:"
+    echo "$0 [-i input.png][-o output.gif]"
+    echo "[-c]逆时针旋转"
+    echo "[-z 100%]放大比例"
+    echo "[-f 30]帧率"
+    echo "[-d 2]每帧旋转角度"
+    echo "[-b ffffff]背景色默认透明 颜色不要加#"
+    exit -1
+}
+
+while getopts 'i:o:cf:d:b:z:' opt; do
+    case $opt in
+        i)
+            IMAGE="$OPTARG"
+            ;;
+        o)
+            OUTPUT="$OPTARG"
+            ;;
+        c)
+            DIRE=-1
+            ;;
+        f)
+            FRAME="$OPTARG"
+            ;;
+        d)
+            DIFF="$OPTARG"
+            ;;
+        b)
+            BACKGROUND_COLOR="#$OPTARG"
+            ;;
+        z)
+            ZOOM="$OPTARG"
+            ;;
+        ?)
+            help
+            ;;
+    esac
+done
+
+if [ ! -f "$IMAGE" ]; then
+    echo "$IMAGE 文件不存在"
+    help
+fi
+
+echo "
+当前配置：
+IMAGE=$IMAGE 
+OUTPUT=$OUTPUT 
+DIRE=$DIRE 
+FRAME=$FRAME 
+DIFF=$DIFF
+ZOOM=$ZOOM
+TEMP_DIR=$TEMP_DIR
+BACKGROUND_COLOR=$BACKGROUND_COLOR
+"
+
+
+# 创建临时目录
+mkdir -p $TEMP_DIR
+
+# 计算总帧数
+TOTAL_FRAMES=$((360 / DIFF))
+
+echo "正在生成图像帧$TOTAL_FRAMES"
+
+magick $IMAGE -resize $ZOOM "$TEMP_DIR/zoom.png"
+IMAGE="$TEMP_DIR/zoom.png"
+
+# 旋转图像并生成帧
+for ((i=0; i<TOTAL_FRAMES; i++)); do
+    ANGLE=$((i * DIFF * DIRE))
+    magick $IMAGE -alpha background -background $BACKGROUND_COLOR -rotate $ANGLE -gravity center -extent $(identify -format "%wx%h" $IMAGE) $TEMP_DIR/frame_$i.png
+done
+
+echo "正在拼接gif"
+# 使用 ffmpeg 将帧转换为 gif
+ffmpeg -i "$TEMP_DIR/frame_%d.png" -vf palettegen "$TEMP_DIR/palette.png"
+ffmpeg -framerate $FRAME -i "$TEMP_DIR/frame_%d.png" -i "$TEMP_DIR/palette.png" -lavfi paletteuse -loop 0 $OUTPUT
+
+# 清理临时文件
+rm -r $TEMP_DIR
+
+echo "
+GIF 已生成: $OUTPUT"

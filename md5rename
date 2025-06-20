@@ -1,0 +1,15 @@
+#!/bin/bash
+
+if [[ ! $1 ]]; then
+	exit "missing arg"
+fi
+
+out=$(md5 $1 | awk '{ print $4 }')
+dir=$(dirname $1)
+filename=$(basename $1)
+
+extension="${filename##*.}"
+
+mv $1 $dir/$out.$extension
+
+echo "$1 -> $dir/$out.$extension"
