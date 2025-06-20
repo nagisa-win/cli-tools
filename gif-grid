@@ -1,0 +1,54 @@
+#!/bin/bash
+
+# 功能描述：创建一个由多个指定的 GIF 图片组成的网格布局 GIF
+# 使用方式：./create_gif_grid.sh -i input.gif -o output.gif -l 3x2
+
+# 初始化参数
+input=""
+output=""
+layout=""
+
+# 解析命令行参数
+while getopts i:o:l: flag
+do
+    case "${flag}" in
+        i) input=${OPTARG};;
+        o) output=${OPTARG};;
+        l) layout=${OPTARG};;
+    esac
+done
+
+# 检查输入文件是否存在
+if [ ! -f "$input" ]; then
+    echo "Error: Input file does not exist."
+    exit 1
+fi
+
+# 验证 layout 参数格式
+if ! [[ $layout =~ ^[0-9]+x[0-9]+$ ]]; then
+    echo "Error: Layout format should be 'NxM' (e.g., 3x2)."
+    exit 1
+fi
+
+# 提取行列信息
+IFS='x' read -r -a layout_array <<< "$layout"
+rows=${layout_array[0]}
+cols=${layout_array[1]}
+
+# 计算需要的图片数量
+total_images=$((rows * cols))
+
+# 创建临时目录用于存储复制的图片
+temp_dir=$(mktemp -d)
+trap "rm -rf $temp_dir" EXIT
+
+# 将输入图片复制到临时目录，足够填满网格
+for (( i=1; i<=$total_images; i++ ))
+do
+    cp "$input" "$temp_dir/image$i.gif"
+done
+
+# 使用 montage 命令创建网格布局的 GIF，使用 `-define` 选项保持原始色彩
+montage "$temp_dir/*.gif" -tile ${rows}x${cols} -geometry +0+0 -background none -define png:color-type=8 "$output"
+
+echo "Output GIF is saved as $output"
