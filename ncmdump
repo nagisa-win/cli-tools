@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# 检查是否提供了目录参数
+if [ $# -eq 0 ]; then
+    echo "请提供目录路径作为参数"
+    exit 1
+fi
+
+current="$(cd $(dirname "$0") && pwd)"
+directory="$1"
+convert="$2"
+
+export PATH="$PATH:$current/bin"
+
+# 遍历目录下所有后缀为.ncm 的文件
+for file in "$directory"/*.ncm; do
+    if [ -f "$file" ]; then
+        echo
+        echo "dump... $file"
+        ncmdump-rs "$file"
+    fi
+done
+
+if [ $convert ]; then
+    for file in "$directory"/*.flac; do
+        if [ -f "$file" ]; then
+            echo
+            echo "convert... $file"
+            ffmpeg -i "$file" "$file.mp3"
+            rename 's/\.flac\.mp3$/.mp3/' "$file.mp3"
+        fi
+    done
+fi
+
