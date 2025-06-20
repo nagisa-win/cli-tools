@@ -1,0 +1,232 @@
+#!/bin/bash
+set +e
+
+version=2.0
+
+# get current directory
+
+FIS_TOKEN_FILE="$HOME/.fis-http-push.json"
+FIS_TMP_TOKEN_FILE="$HOME/.fis3-tmp/deploy.json"
+
+# project config path
+PROJECT_FIS_DIR="$HOME/.cache/fism"
+if [ ! -d "$PROJECT_FIS_DIR" ]; then
+    mkdir -p "$PROJECT_FIS_DIR"
+    echo "" >"$PROJECT_FIS_DIR/NAME"
+fi
+
+# function: echo help info
+echo_help() {
+    echo "使用方法："
+    echo "fism help 显示帮助信息"
+    echo "fism show 显示当前fis部署token路径"
+    echo "fism ls 列出当前项目下配置目录"
+    echo "fism run 使用当前配置执行npm run sync"
+    echo "fism -c <name> 复制全局fis部署token到项目目录并命名"
+    echo "fism -u <name> 使用已有的fis部署token，链接到全局"
+    echo "fism -i <name> 更新.env文件中的FSR_HOST"
+    echo "fism -d <name> 删除一个fis部署token"
+    echo "fism -r 还原全局部署token"
+}
+
+# function: ln project path to home directory
+ln_project_path_to_home() {
+    name=$1
+    name=${name##*/}
+    echo "http://$name" >$PROJECT_FIS_DIR/NAME
+    echo "link $PROJECT_FIS_DIR/$name/.fis-http-push.json to $FIS_TOKEN_FILE"
+    ln -sf $PROJECT_FIS_DIR/$name/.fis-http-push.json $FIS_TOKEN_FILE
+    echo "link $PROJECT_FIS_DIR/$name/deploy.json to $FIS_TMP_TOKEN_FILE"
+    ln -sf $PROJECT_FIS_DIR/$name/deploy.json $FIS_TMP_TOKEN_FILE
+    echo "成功链接！"
+}
+
+# function: unlink project path to home directory
+unlink_project_path_to_home() {
+    name=$1
+    name=${name##*/}
+    echo "unlink path: $PROJECT_FIS_DIR/$name"
+    rm $FIS_TOKEN_FILE
+    rm $FIS_TMP_TOKEN_FILE
+    if [ -e $FIS_TOKEN_FILE.bak ]; then
+        mv $FIS_TOKEN_FILE.bak $FIS_TOKEN_FILE
+    fi
+    if [ -e $FIS_TMP_TOKEN_FILE.bak ]; then
+        mv $FIS_TMP_TOKEN_FILE.bak $FIS_TMP_TOKEN_FILE
+    fi
+    rm $PROJECT_FIS_DIR/NAME
+    echo "成功取消链接！"
+}
+
+# function: create a new fis deploy token
+create_fis_deploy_token() {
+    name=$1
+    name=${name##*/}
+    echo "create fis deploy token: $name"
+    if [ -d $PROJECT_FIS_DIR/$name ]; then
+        echo "fis deploy token already exists: $name"
+        echo "请先删除目录：$PROJECT_FIS_DIR/$name"
+        echo "或者使用其他名称"
+        return
+    fi
+    mkdir -p $PROJECT_FIS_DIR/$name
+    echo "http://$name" >$PROJECT_FIS_DIR/NAME
+    if [ -e $FIS_TOKEN_FILE ]; then
+        cp $FIS_TOKEN_FILE $PROJECT_FIS_DIR/$name/.fis-http-push.json
+        if [ ! -e $FIS_TOKEN_FILE.bak ]; then
+            mv $FIS_TOKEN_FILE $FIS_TOKEN_FILE.bak
+        fi
+    else
+        echo '{"email": "","code": "","token": ""}' >$PROJECT_FIS_DIR/$name/.fis-http-push.json
+    fi
+    if [ -e $FIS_TMP_TOKEN_FILE ]; then
+        cp $FIS_TMP_TOKEN_FILE $PROJECT_FIS_DIR/$name/deploy.json
+        if [ ! -e $FIS_TMP_TOKEN_FILE.bak ]; then
+            mv $FIS_TMP_TOKEN_FILE $FIS_TMP_TOKEN_FILE.bak
+        fi
+    else
+        touch $PROJECT_FIS_DIR/$name/deploy.json
+    fi
+    ln_project_path_to_home $name
+}
+
+# function: use a existed fis deploy token
+use_existed_fis_deploy_token() {
+    name=$1
+    name=${name##*/}
+    match_list=($(ls $PROJECT_FIS_DIR | grep ^$name))
+    if [ ${#match_list[@]} -eq 0 ]; then
+        echo "fis deploy token not found: $name"
+        echo "请先创建一个名为 $name 的fis部署token"
+        return
+    elif [ ${#match_list[@]} -gt 1 ]; then
+        echo "fis deploy token match multiple: $name"
+        for m in ${match_list[@]}; do
+            echo $m
+        done
+        return
+    else
+        name=${match_list[0]}
+    fi
+    echo "use existed fis deploy token: $name"
+    echo ""
+    ln_project_path_to_home $name
+}
+
+# function: delete a fis deploy token
+delete_fis_deploy_token() {
+    name=$1
+    name=${name##*/}
+    match_list=($(ls $PROJECT_FIS_DIR | grep ^$name))
+    if [ ${#match_list[@]} -eq 0 ]; then
+        echo "fis deploy token not found: $name"
+        echo "不存在 $name 的fis部署token"
+        return
+    elif [ ${#match_list[@]} -gt 1 ]; then
+        echo "fis deploy token match multiple: $name"
+        for m in ${match_list[@]}; do
+            echo $m
+        done
+        return
+    else
+        name=${match_list[0]}
+    fi
+    echo "delete fis deploy token: $name"
+    unlink_project_path_to_home $name
+    rm -r $PROJECT_FIS_DIR/$name
+    echo "" >$PROJECT_FIS_DIR/NAME
+}
+
+# function: update FSR_HOST in .env file
+update_fsr_host_in_env() {
+    name=$1
+    if [ -f ".env" ] && grep -q "FSR_HOST=" ".env"; then
+        sed -i "" "s/FSR_HOST=.*/FSR_HOST=http:\/\/$name/" ".env"
+        echo "更新.env文件中的FSR_HOST为: $name"
+    fi
+}
+
+# function: restore global fis deploy token
+restore_global_fis_deploy_token() {
+    echo "restore global fis deploy token"
+    if [ -e $FIS_TOKEN_FILE.bak ]; then
+        mv $FIS_TOKEN_FILE.bak $FIS_TOKEN_FILE
+        echo "成功还原！"
+    fi
+    if [ -e $FIS_TMP_TOKEN_FILE.bak ]; then
+        mv $FIS_TMP_TOKEN_FILE.bak $FIS_TMP_TOKEN_FILE
+        echo "成功还原！"
+    fi
+}
+
+run_home() {
+    args=$1
+    if [ -e $PROJECT_FIS_DIR/NAME ]; then
+        name=$(cat $PROJECT_FIS_DIR/NAME)
+        echo "set HOME to $name"
+        HOME=$name $args
+    else
+        echo "当前无配置FSR HOST环境"
+    fi
+}
+
+ls_current_dir_profiles() {
+    if [ ! -d $PROJECT_FIS_DIR ]; then
+        echo "项目配置目录不存在：$PROJECT_FIS_DIR"
+        return
+    fi
+    current_name=$(cat $PROJECT_FIS_DIR/NAME)
+    current_name=${current_name##*/}
+    for dir in $PROJECT_FIS_DIR/*/; do
+        if [ $dir = "$PROJECT_FIS_DIR/*/" ]; then
+            break
+        fi
+        if [ -n "$current_name" ] && [ "$current_name" = "$(basename $dir)" ]; then
+            echo "=> $(basename $dir)"
+            continue
+        fi
+        echo "-- $(basename $dir)"
+    done
+}
+
+while getopts 'c:u:i:d:r' opt; do
+    case $opt in
+    c)
+        create_fis_deploy_token "$OPTARG"
+        ;;
+    u)
+        use_existed_fis_deploy_token "$OPTARG"
+        ;;
+    i)
+        update_fsr_host_in_env "$OPTARG"
+        ;;
+    d)
+        delete_fis_deploy_token "$OPTARG"
+        ;;
+    r)
+        restore_global_fis_deploy_token
+        ;;
+    ?)
+        echo_help
+        ;;
+    esac
+done
+
+# Check if no arguments were provided
+if [ $# -eq 0 ]; then
+    echo_help
+    exit
+fi
+
+# command switch
+if [ "$1" == "show" ]; then
+    echo "Current FIS deploy token paths:"
+    echo "FIS_TOKEN_FILE -> $(readlink -f $FIS_TOKEN_FILE)"
+    echo "FIS_TMP_TOKEN_FILE -> $(readlink -f $FIS_TMP_TOKEN_FILE)"
+elif [ "$1" == "run" ]; then
+    run_home "$2"
+elif [ "$1" == "ls" ]; then
+    ls_current_dir_profiles
+else
+    echo -e "\nver.$version"
+fi
