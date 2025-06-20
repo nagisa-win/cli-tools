@@ -1,0 +1,31 @@
+#!/bin/bash
+# 安装依赖: ffmpeg
+
+DIR="./%d.png"
+FRAMERATE=30
+OUTPUT="output.gif"
+
+while getopts 'd:f:o:' opt; do
+    case $opt in
+        d)
+            DIR="$OPTARG"
+            ;;
+        f)
+            FRAMERATE="$OPTARG"
+            ;;
+        o)
+            OUTPUT="$OPTARG"
+            ;;
+        ?)
+            exit
+            ;;
+    esac
+done
+
+echo "正在拼接gif"
+ffmpeg -i "$DIR" -vf palettegen "palette.png"
+ffmpeg -framerate $FRAMERATE -i "$DIR" -i "palette.png" -lavfi paletteuse -loop 0 $OUTPUT
+
+rm "palette.png"
+
+echo "done."
