@@ -103,9 +103,9 @@ def update_readme(file_tree, ai_summary):
 if __name__ == "__main__":
     generated_file_tree = generate_file_tree()
     ai_summary = generate_ai_summary()
-    os.system("git add .")
     update_readme(generated_file_tree, ai_summary)
     # Stage the updated README.md
     os.system("git add README.md")
+    os.system("git commit --amend --no-edit")
     with open("README.md", "w", encoding='utf8') as f:
         f.write(CONTENT)
