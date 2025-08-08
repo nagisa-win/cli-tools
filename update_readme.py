@@ -107,5 +107,6 @@ if __name__ == "__main__":
     # Stage the updated README.md
     os.system("git add README.md")
     os.system("git commit --amend --no-edit")
+    # Restore original README.md
     with open("README.md", "w", encoding='utf8') as f:
         f.write(CONTENT)
