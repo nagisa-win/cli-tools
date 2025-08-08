@@ -88,7 +88,10 @@ def main():
                 entry_data = json.loads(json_content)
 
             # Get title
-            title = entry_data.get('title', f'video_{i}')
+            title = entry_data.get('page_data', {}).get('download_subtitle')
+            if not title:
+                # 不分p的视频，直接用标题
+                title = entry_data.get('title', f'video_{i}')
             print(f"Title: {title}")
 
             # Get file paths
