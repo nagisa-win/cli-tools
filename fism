@@ -1,15 +1,15 @@
 #!/bin/bash
-set +e
 
-version=2.0
+version=2.7
 
 # get current directory
 
 FIS_TOKEN_FILE="$HOME/.fis-http-push.json"
+GULP_FIS_TOKEN_FILE="$HOME/.gulp-deploy-http-push.json"
 FIS_TMP_TOKEN_FILE="$HOME/.fis3-tmp/deploy.json"
 
 # project config path
-PROJECT_FIS_DIR="$HOME/.cache/fism"
+PROJECT_FIS_DIR="$HOME/.config/fism"
 if [ ! -d "$PROJECT_FIS_DIR" ]; then
     mkdir -p "$PROJECT_FIS_DIR"
     echo "" >"$PROJECT_FIS_DIR/NAME"
@@ -21,12 +21,13 @@ echo_help() {
     echo "fism help 显示帮助信息"
     echo "fism show 显示当前fis部署token路径"
     echo "fism ls 列出当前项目下配置目录"
-    echo "fism run 使用当前配置执行npm run sync"
-    echo "fism -c <name> 复制全局fis部署token到项目目录并命名"
-    echo "fism -u <name> 使用已有的fis部署token，链接到全局"
-    echo "fism -i <name> 更新.env文件中的FSR_HOST"
-    echo "fism -d <name> 删除一个fis部署token"
-    echo "fism -r 还原全局部署token"
+    echo "fism clear 删除所有存储的配置"
+    echo "fism run 使用当前配置设置为HOME目录并执行命令"
+    echo "fism create <name> 复制全局fis部署token到项目目录并命名"
+    echo "fism use <name> 使用已有的fis部署token，链接到全局"
+    echo "fism apply <name> 更新.env文件中的FSR_HOST"
+    echo "fism delete <name> 删除一个fis部署token"
+    echo "fism restore 还原全局部署token"
 }
 
 # function: ln project path to home directory
@@ -38,6 +39,9 @@ ln_project_path_to_home() {
     ln -sf $PROJECT_FIS_DIR/$name/.fis-http-push.json $FIS_TOKEN_FILE
     echo "link $PROJECT_FIS_DIR/$name/deploy.json to $FIS_TMP_TOKEN_FILE"
     ln -sf $PROJECT_FIS_DIR/$name/deploy.json $FIS_TMP_TOKEN_FILE
+    echo "link $PROJECT_FIS_DIR/$name/.fis-http-push.json to $GULP_FIS_TOKEN_FILE"
+    ln -sf $PROJECT_FIS_DIR/$name/.fis-http-push.json $GULP_FIS_TOKEN_FILE
+
     echo "成功链接！"
 }
 
@@ -48,11 +52,15 @@ unlink_project_path_to_home() {
     echo "unlink path: $PROJECT_FIS_DIR/$name"
     rm $FIS_TOKEN_FILE
     rm $FIS_TMP_TOKEN_FILE
+    rm $GULP_FIS_TOKEN_FILE
     if [ -e $FIS_TOKEN_FILE.bak ]; then
         mv $FIS_TOKEN_FILE.bak $FIS_TOKEN_FILE
     fi
     if [ -e $FIS_TMP_TOKEN_FILE.bak ]; then
         mv $FIS_TMP_TOKEN_FILE.bak $FIS_TMP_TOKEN_FILE
+    fi
+    if [ -e $GULP_FIS_TOKEN_FILE.bak ]; then
+        mv $GULP_FIS_TOKEN_FILE.bak $GULP_FIS_TOKEN_FILE
     fi
     rm $PROJECT_FIS_DIR/NAME
     echo "成功取消链接！"
@@ -77,7 +85,7 @@ create_fis_deploy_token() {
             mv $FIS_TOKEN_FILE $FIS_TOKEN_FILE.bak
         fi
     else
-        echo '{"email": "","code": "","token": ""}' >$PROJECT_FIS_DIR/$name/.fis-http-push.json
+        echo '{"email": "yanjunzhu@baidu.com","code": "","token": ""}' > $PROJECT_FIS_DIR/$name/.fis-http-push.json
     fi
     if [ -e $FIS_TMP_TOKEN_FILE ]; then
         cp $FIS_TMP_TOKEN_FILE $PROJECT_FIS_DIR/$name/deploy.json
@@ -85,29 +93,50 @@ create_fis_deploy_token() {
             mv $FIS_TMP_TOKEN_FILE $FIS_TMP_TOKEN_FILE.bak
         fi
     else
-        touch $PROJECT_FIS_DIR/$name/deploy.json
+        echo '{"email": "yanjunzhu@baidu.com","code": "","token": ""}' > $PROJECT_FIS_DIR/$name/deploy.json
+    fi
+    if [ -e $GULP_FIS_TOKEN_FILE ]; then
+        if [ ! -e $GULP_FIS_TOKEN_FILE.bak ]; then
+            mv $GULP_FIS_TOKEN_FILE $GULP_FIS_TOKEN_FILE.bak
+        fi
     fi
     ln_project_path_to_home $name
 }
 
+# function: find and validate fis deploy token name
+find_fis_deploy_token() {
+    local token_name=$1
+    token_name=${token_name##*/}
+    # only match directories (actual created tokens), exclude NAME file
+    local match_list=()
+    for dir in "$PROJECT_FIS_DIR"/*/; do
+        [ -d "$dir" ] || continue
+        local basename=$(basename "$dir")
+        [[ "$basename" == "$token_name"* ]] && match_list+=("$basename")
+    done
+
+    if [ ${#match_list[@]} -eq 0 ]; then
+        echo "fis deploy token not found: $token_name" >&2
+        echo "请先使用 fism create $token_name 创建后再操作" >&2
+        return 1
+    elif [ ${#match_list[@]} -gt 1 ]; then
+        echo "前缀 '$token_name' 匹配到多个配置，请输入完整名称：" >&2
+        for m in "${match_list[@]}"; do
+            echo "  $m" >&2
+        done
+        return 2
+    else
+        echo "${match_list[0]}"
+        return 0
+    fi
+}
+
 # function: use a existed fis deploy token
 use_existed_fis_deploy_token() {
-    name=$1
-    name=${name##*/}
-    match_list=($(ls $PROJECT_FIS_DIR | grep ^$name))
-    if [ ${#match_list[@]} -eq 0 ]; then
-        echo "fis deploy token not found: $name"
-        echo "请先创建一个名为 $name 的fis部署token"
-        return
-    elif [ ${#match_list[@]} -gt 1 ]; then
-        echo "fis deploy token match multiple: $name"
-        for m in ${match_list[@]}; do
-            echo $m
-        done
-        return
-    else
-        name=${match_list[0]}
-    fi
+    local name=$1
+    local result=$(find_fis_deploy_token "$name") || return $?
+
+    name="$result"
     echo "use existed fis deploy token: $name"
     echo ""
     ln_project_path_to_home $name
@@ -115,22 +144,10 @@ use_existed_fis_deploy_token() {
 
 # function: delete a fis deploy token
 delete_fis_deploy_token() {
-    name=$1
-    name=${name##*/}
-    match_list=($(ls $PROJECT_FIS_DIR | grep ^$name))
-    if [ ${#match_list[@]} -eq 0 ]; then
-        echo "fis deploy token not found: $name"
-        echo "不存在 $name 的fis部署token"
-        return
-    elif [ ${#match_list[@]} -gt 1 ]; then
-        echo "fis deploy token match multiple: $name"
-        for m in ${match_list[@]}; do
-            echo $m
-        done
-        return
-    else
-        name=${match_list[0]}
-    fi
+    local name=$1
+    local result=$(find_fis_deploy_token "$name") || return $?
+
+    name="$result"
     echo "delete fis deploy token: $name"
     unlink_project_path_to_home $name
     rm -r $PROJECT_FIS_DIR/$name
@@ -139,10 +156,21 @@ delete_fis_deploy_token() {
 
 # function: update FSR_HOST in .env file
 update_fsr_host_in_env() {
-    name=$1
+    local name=$1
+    local result=$(find_fis_deploy_token "$name") || return $?
+
+    name="$result"
     if [ -f ".env" ] && grep -q "FSR_HOST=" ".env"; then
         sed -i "" "s/FSR_HOST=.*/FSR_HOST=http:\/\/$name/" ".env"
         echo "更新.env文件中的FSR_HOST为: $name"
+    elif [ -f ".env" ] && grep -q "FSR_HOST_MOBILE=" ".env"; then
+        sed -i "" "s/FSR_HOST_MOBILE=.*/FSR_HOST_MOBILE=http:\/\/$name/" ".env"
+        echo "更新.env文件中的FSR_HOST为: $name"
+    elif [ -f "dev.config.js" ] && grep -q "receiver:" "dev.config.js"; then
+        sed -i "" "s/receiver: '[^']*'/receiver: 'http:\/\/$name'/g" "dev.config.js"
+        echo "更新dev.config.js文件中的FSR_HOST为: $name"
+    else
+        echo "未找到.env文件"
     fi
 }
 
@@ -156,6 +184,10 @@ restore_global_fis_deploy_token() {
     if [ -e $FIS_TMP_TOKEN_FILE.bak ]; then
         mv $FIS_TMP_TOKEN_FILE.bak $FIS_TMP_TOKEN_FILE
         echo "成功还原！"
+    fi
+    if [ -e $GULP_FIS_TOKEN_FILE.bak ]; then
+        mv $GULP_FIS_TOKEN_FILE.bak $GULP_FIS_TOKEN_FILE
+        echo "成功还原"
     fi
 }
 
@@ -189,28 +221,18 @@ ls_current_dir_profiles() {
     done
 }
 
-while getopts 'c:u:i:d:r' opt; do
-    case $opt in
-    c)
-        create_fis_deploy_token "$OPTARG"
-        ;;
-    u)
-        use_existed_fis_deploy_token "$OPTARG"
-        ;;
-    i)
-        update_fsr_host_in_env "$OPTARG"
-        ;;
-    d)
-        delete_fis_deploy_token "$OPTARG"
-        ;;
-    r)
-        restore_global_fis_deploy_token
-        ;;
-    ?)
-        echo_help
-        ;;
-    esac
-done
+clear_all_profiles() {
+    read -p "⚠️  确认要删除所有存储的配置吗？这将不可恢复！(y/n): " confirm
+    if [[ $confirm != [yY] ]]; then
+        echo "已取消操作"
+        return
+    fi
+
+    echo "正在删除所有配置..."
+    rm -rf $PROJECT_FIS_DIR/*
+    echo "" > $PROJECT_FIS_DIR/NAME
+    echo "所有配置已删除"
+}
 
 # Check if no arguments were provided
 if [ $# -eq 0 ]; then
@@ -219,14 +241,41 @@ if [ $# -eq 0 ]; then
 fi
 
 # command switch
-if [ "$1" == "show" ]; then
-    echo "Current FIS deploy token paths:"
-    echo "FIS_TOKEN_FILE -> $(readlink -f $FIS_TOKEN_FILE)"
-    echo "FIS_TMP_TOKEN_FILE -> $(readlink -f $FIS_TMP_TOKEN_FILE)"
-elif [ "$1" == "run" ]; then
-    run_home "$2"
-elif [ "$1" == "ls" ]; then
-    ls_current_dir_profiles
-else
-    echo -e "\nver.$version"
-fi
+case "$1" in
+    "help")
+        echo_help
+        ;;
+    "show")
+        echo "Current FIS deploy token paths:"
+        echo "FIS_TOKEN_FILE -> $(readlink -f $FIS_TOKEN_FILE)"
+        echo "FIS_TMP_TOKEN_FILE -> $(readlink -f $FIS_TMP_TOKEN_FILE)"
+        echo "GULP_FIS_TOKEN_FILE -> $(readlink -f $GULP_FIS_TOKEN_FILE)"
+        ;;
+    "run")
+        run_home "$2"
+        ;;
+    "ls")
+        ls_current_dir_profiles
+        ;;
+    "clear")
+        clear_all_profiles
+        ;;
+    "create")
+        create_fis_deploy_token "$2"
+        ;;
+    "use")
+        use_existed_fis_deploy_token "$2"
+        ;;
+    "apply")
+        update_fsr_host_in_env "$2"
+        ;;
+    "delete")
+        delete_fis_deploy_token "$2"
+        ;;
+    "restore")
+        restore_global_fis_deploy_token
+        ;;
+    *)
+        echo -e "Unknown command.\n  ver.$version"
+        ;;
+esac

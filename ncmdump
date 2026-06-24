@@ -6,11 +6,8 @@ if [ $# -eq 0 ]; then
     exit 1
 fi
 
-current="$(cd $(dirname "$0") && pwd)"
 directory="$1"
 convert="$2"
-
-export PATH="$PATH:$current/bin"
 
 # 遍历目录下所有后缀为.ncm 的文件
 for file in "$directory"/*.ncm; do

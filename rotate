@@ -58,10 +58,10 @@ fi
 
 echo "
 当前配置：
-IMAGE=$IMAGE 
-OUTPUT=$OUTPUT 
-DIRE=$DIRE 
-FRAME=$FRAME 
+IMAGE=$IMAGE
+OUTPUT=$OUTPUT
+DIRE=$DIRE
+FRAME=$FRAME
 DIFF=$DIFF
 ZOOM=$ZOOM
 TEMP_DIR=$TEMP_DIR
@@ -74,22 +74,25 @@ mkdir -p $TEMP_DIR
 
 # 计算总帧数
 TOTAL_FRAMES=$((360 / DIFF))
+# 计算文件名所需的位数（零填充）
+WIDTH=${#TOTAL_FRAMES}
 
 echo "正在生成图像帧$TOTAL_FRAMES"
 
 magick $IMAGE -resize $ZOOM "$TEMP_DIR/zoom.png"
 IMAGE="$TEMP_DIR/zoom.png"
 
-# 旋转图像并生成帧
+# 旋转图像并生成帧（使用零填充文件名）
 for ((i=0; i<TOTAL_FRAMES; i++)); do
     ANGLE=$((i * DIFF * DIRE))
-    magick $IMAGE -alpha background -background $BACKGROUND_COLOR -rotate $ANGLE -gravity center -extent $(identify -format "%wx%h" $IMAGE) $TEMP_DIR/frame_$i.png
+    FILENUM=$(printf "%0${WIDTH}d" $i)
+    magick $IMAGE -alpha background -background $BACKGROUND_COLOR -rotate $ANGLE -gravity center -extent $(identify -format "%wx%h" $IMAGE) $TEMP_DIR/frame_$FILENUM.png
 done
 
 echo "正在拼接gif"
-# 使用 ffmpeg 将帧转换为 gif
-ffmpeg -i "$TEMP_DIR/frame_%d.png" -vf palettegen "$TEMP_DIR/palette.png"
-ffmpeg -framerate $FRAME -i "$TEMP_DIR/frame_%d.png" -i "$TEMP_DIR/palette.png" -lavfi paletteuse -loop 0 $OUTPUT
+# 使用 ffmpeg 将帧转换为 gif（使用零填充格式）
+ffmpeg -i "$TEMP_DIR/frame_%0${WIDTH}d.png" -vf palettegen "$TEMP_DIR/palette.png"
+ffmpeg -framerate $FRAME -i "$TEMP_DIR/frame_%0${WIDTH}d.png" -i "$TEMP_DIR/palette.png" -lavfi paletteuse -loop 0 $OUTPUT
 
 # 清理临时文件
 rm -r $TEMP_DIR

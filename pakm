@@ -1,0 +1,1380 @@
+#!/bin/bash
+# pakm - Pack/Unpack Manager
+# 统一的压缩和解压工具
+
+set -e
+
+VERSION="1.0.0"
+SCRIPT_NAME=$(basename "$0")
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# 全局变量
+DELETE_SOURCE=false
+OVERWRITE=false
+KEEP_ARCHIVE=false
+TARGET_NAME=""
+SMART_EXTRACT=true
+
+# ============================================================================
+# 帮助信息
+# ============================================================================
+
+show_help() {
+    cat << EOF
+pakm v${VERSION} - 统一的压缩和解压工具
+
+用法:
+  pakm x <file> [-d] [output_dir]    解压文件 (extract)
+  pakm c <dir> <archive> [-d]        压缩目录 (compress)
+  pakm l <file>                      列出压缩包内容 (list)
+  pakm t <file>                      测试压缩包完整性 (test)
+
+命令:
+  x          解压文件到目录（默认以压缩包命名目录）
+  c          创建压缩包
+  l          列出压缩包内的文件
+  t          测试压缩包完整性
+
+参数:
+  -d         操作完成后删除源文件/目录（需二次确认）
+  -o, --overwrite   覆盖已存在的目录/文件
+  -k, --keep        保留压缩包（仅解压时）
+  -f, --force       强制覆盖，不询问
+  -h, --help        显示此帮助信息
+  -v, --version     显示版本信息
+
+智能解压:
+  当解压后顶层只有单独的文件或文件夹时，
+  将直接提取内容到当前目录，不再创建嵌套目录。
+
+示例:
+  pakm x archive.tar.gz              # 解压到 archive/ 目录
+  pakm x archive.tar.gz -d            # 解压并删除源文件（需确认）
+  pakm x data.zip myoutput            # 解压到 myoutput/ 目录
+  pakm x archive.zip -o               # 解压并覆盖已存在的目录
+  pakm c folder/ backup.zip -d         # 压缩并删除源目录（需确认）
+  pakm l archive.zip                  # 列出 archive.zip 内的文件
+  pakm t archive.tar.gz               # 测试 tar.gz 完整性
+
+支持的压缩格式:
+  归档格式:   .tar, .tar.gz, .tgz, .tar.bz2, .tbz2, .tar.xz, .txz
+              .tar.zst, .tar.lz4
+  单文件压缩: .gz, .bz2, .xz, .zst, .lz4
+  压缩包:    .zip, .7z, .rar
+  系统包:    .deb, .rpm
+  其他:      .asar (Electron 应用)
+
+EOF
+}
+
+# ============================================================================
+# 工具函数
+# ============================================================================
+
+# 检测操作系统
+detect_os() {
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "macos"
+    elif [[ -f /etc/debian_version ]]; then
+        echo "debian"
+    elif [[ -f /etc/redhat-release ]]; then
+        echo "redhat"
+    elif [[ -f /etc/arch-release ]]; then
+        echo "arch"
+    else
+        echo "linux"
+    fi
+}
+
+# 检查命令是否存在
+command_exists() {
+    command -v "$1" &> /dev/null
+}
+
+# 获取安装建议
+get_install_suggestion() {
+    local tool="$1"
+    local os=$(detect_os)
+
+    case "$os" in
+        macos)
+            echo "brew install $tool"
+            ;;
+        debian)
+            case "$tool" in
+                "unrar") echo "sudo apt install unrar" ;;
+                "p7zip") echo "sudo apt install p7zip-full" ;;
+                "zstd") echo "sudo apt install zstd" ;;
+                "lz4") echo "sudo apt install lz4" ;;
+                *) echo "sudo apt install $tool" ;;
+            esac
+            ;;
+        redhat)
+            case "$tool" in
+                "unrar") echo "sudo yum install unrar" ;;
+                "p7zip") echo "sudo yum install p7zip" ;;
+                "zstd") echo "sudo yum install zstd" ;;
+                "lz4") echo "sudo yum install lz4" ;;
+                *) echo "sudo yum install $tool" ;;
+            esac
+            ;;
+        arch)
+            case "$tool" in
+                "unrar") echo "sudo pacman -S unrar" ;;
+                "p7zip") echo "sudo pacman -S p7zip" ;;
+                "zstd") echo "sudo pacman -S zstd" ;;
+                "lz4") echo "sudo pacman -S lz4" ;;
+                *) echo "sudo pacman -S $tool" ;;
+            esac
+            ;;
+        *)
+            echo "请安装 $tool"
+            ;;
+    esac
+}
+
+# 打印错误信息
+error() {
+    echo -e "${RED}错误: $1${NC}" >&2
+}
+
+# 打印警告信息
+warn() {
+    echo -e "${YELLOW}警告: $1${NC}"
+}
+
+# 打印成功信息
+success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+# 打印信息
+info() {
+    echo -e "${BLUE}→ $1${NC}"
+}
+
+# 确认操作
+confirm() {
+    local prompt="$1"
+    local default="${2:-n}"
+
+    if [[ "$default" == "y" ]]; then
+        prompt="$prompt [Y/n]"
+    else
+        prompt="$prompt [y/N]"
+    fi
+
+    read -p "$prompt: " response
+    response=${response:-$default}
+
+    [[ "$response" =~ ^[Yy]$ ]]
+}
+
+# ============================================================================
+# 文件格式检测
+# ============================================================================
+
+# 通过文件头检测格式
+detect_format_by_header() {
+    local file="$1"
+
+    # 读取文件头
+    local header=$(xxd -l 16 "$file" 2>/dev/null | head -1)
+
+    # ZIP (PK)
+    if [[ "$header" =~ ^.*504b.* ]]; then
+        echo "zip"
+        return
+    fi
+
+    # RAR (Rar!)
+    if [[ "$header" =~ ^.*52617221.* ]]; then
+        echo "rar"
+        return
+    fi
+
+    # 7z (7z)
+    if [[ "$header" =~ ^.*377abcaf271c.* ]]; then
+        echo "7z"
+        return
+    fi
+
+    # gzip
+    if [[ "$header" =~ ^.*1f8b.* ]]; then
+        echo "gzip"
+        return
+    fi
+
+    # bzip2 (BZ)
+    if [[ "$header" =~ ^.*425a.* ]]; then
+        echo "bzip2"
+        return
+    fi
+
+    # xz
+    if [[ "$header" =~ ^.*fd377a585a00.* ]]; then
+        echo "xz"
+        return
+    fi
+
+    # zstd
+    if [[ "$header" =~ ^.*28b52ffd00.* ]]; then
+        echo "zstd"
+        return
+    fi
+
+    # tar (ustar at offset 257)
+    if file "$file" 2>/dev/null | grep -q "POSIX tar"; then
+        echo "tar"
+        return
+    fi
+
+    # deb (deb archive)
+    if file "$file" 2>/dev/null | grep -q "Debian binary package"; then
+        echo "deb"
+        return
+    fi
+
+    # rpm
+    if file "$file" 2>/dev/null | grep -q "RPM"; then
+        echo "rpm"
+        return
+    fi
+
+    # asar (Electron app package)
+    if [[ "$header" =~ ^.*4e6f6e65.* ]]; then
+        # Check if it's actually asar by looking for "None\n" followed by JSON
+        local asar_check=$(xxd -l 64 "$file" 2>/dev/null | head -1)
+        if [[ "$asar_check" =~ 4e6f6e650a.* ]]; then
+            echo "asar"
+            return
+        fi
+    fi
+
+    echo "unknown"
+}
+
+# 通过扩展名检测格式
+detect_format_by_extension() {
+    local file="$1"
+    local filename=$(basename "$file")
+
+    # 转为小写
+    local lowername=$(echo "$filename" | tr '[:upper:]' '[:lower:]')
+
+    case "$lowername" in
+        *.tar.gz|*.tgz)
+            echo "tar.gz"
+            ;;
+        *.tar.bz2|*.tbz2)
+            echo "tar.bz2"
+            ;;
+        *.tar.xz|*.txz)
+            echo "tar.xz"
+            ;;
+        *.tar.zst)
+            echo "tar.zst"
+            ;;
+        *.tar.lz4)
+            echo "tar.lz4"
+            ;;
+        *.tar)
+            echo "tar"
+            ;;
+        *.gz)
+            echo "gz"
+            ;;
+        *.bz2)
+            echo "bz2"
+            ;;
+        *.xz)
+            echo "xz"
+            ;;
+        *.zst)
+            echo "zst"
+            ;;
+        *.lz4)
+            echo "lz4"
+            ;;
+        *.zip)
+            echo "zip"
+            ;;
+        *.7z)
+            echo "7z"
+            ;;
+        *.rar)
+            echo "rar"
+            ;;
+        *.deb)
+            echo "deb"
+            ;;
+        *.rpm)
+            echo "rpm"
+            ;;
+        *.asar)
+            echo "asar"
+            ;;
+        *)
+            echo "unknown"
+            ;;
+    esac
+}
+
+# 综合检测格式
+detect_format() {
+    local file="$1"
+
+    # 先尝试扩展名
+    local ext_format=$(detect_format_by_extension "$file")
+
+    if [[ "$ext_format" != "unknown" ]]; then
+        echo "$ext_format"
+        return
+    fi
+
+    # 没有扩展名，通过文件头检测
+    local header_format=$(detect_format_by_header "$file")
+    echo "$header_format"
+}
+
+# ============================================================================
+# 解压功能
+# ============================================================================
+
+# 获取解压输出目录名
+get_extract_dir() {
+    local file="$1"
+    local filename=$(basename "$file")
+
+    # 移除常见压缩扩展名
+    local name="$filename"
+
+    # 按顺序移除扩展名（处理双重扩展名如 .tar.gz）
+    case "$(echo "$name" | tr '[:upper:]' '[:lower:]')" in
+        *.tar.gz)   name="${name%.tar.gz}" ;;
+        *.tar.bz2)  name="${name%.tar.bz2}" ;;
+        *.tar.xz)   name="${name%.tar.xz}" ;;
+        *.tar.zst)  name="${name%.tar.zst}" ;;
+        *.tar.lz4)  name="${name%.tar.lz4}" ;;
+        *.tgz)      name="${name%.tgz}" ;;
+        *.tbz2)     name="${name%.tbz2}" ;;
+        *.txz)      name="${name%.txz}" ;;
+        *.tar)      name="${name%.tar}" ;;
+        *.gz)       name="${name%.gz}" ;;
+        *.bz2)      name="${name%.bz2}" ;;
+        *.xz)       name="${name%.xz}" ;;
+        *.zst)      name="${name%.zst}" ;;
+        *.lz4)      name="${name%.lz4}" ;;
+        *.zip)      name="${name%.zip}" ;;
+        *.7z)       name="${name%.7z}" ;;
+        *.rar)      name="${name%.rar}" ;;
+        *.deb)      name="${name%.deb}" ;;
+        *.rpm)      name="${name%.rpm}" ;;
+        *)          name="${name%%.*}" ;;
+    esac
+
+    if [[ -z "$name" || "$name" == "$filename" ]]; then
+        name="${filename}_extracted"
+    fi
+
+    echo "$name"
+}
+
+# 检查解压工具
+check_extract_tool() {
+    local format="$1"
+
+    case "$format" in
+        tar|tar.gz|tar.bz2|tar.xz|tar.zst|tar.lz4)
+            # tar 通常内置，但检查压缩工具
+            case "$format" in
+                tar.gz)
+                    if ! command_exists gzip; then
+                        error "未找到 gzip"
+                        echo "安装建议: $(get_install_suggestion gzip)"
+                        return 1
+                    fi
+                    ;;
+                tar.bz2)
+                    if ! command_exists bzip2; then
+                        error "未找到 bzip2"
+                        echo "安装建议: $(get_install_suggestion bzip2)"
+                        return 1
+                    fi
+                    ;;
+                tar.xz)
+                    if ! command_exists xz; then
+                        error "未找到 xz"
+                        echo "安装建议: $(get_install_suggestion xz)"
+                        return 1
+                    fi
+                    ;;
+                tar.zst)
+                    if ! command_exists zstd; then
+                        error "未找到 zstd"
+                        echo "安装建议: $(get_install_suggestion zstd)"
+                        return 1
+                    fi
+                    ;;
+                tar.lz4)
+                    if ! command_exists lz4; then
+                        error "未找到 lz4"
+                        echo "安装建议: $(get_install_suggestion lz4)"
+                        return 1
+                    fi
+                    ;;
+            esac
+            ;;
+        gz|bz2|xz|zst|lz4)
+            # 单文件压缩
+            case "$format" in
+                gz)
+                    if ! command_exists gzip; then
+                        error "未找到 gzip"
+                        echo "安装建议: $(get_install_suggestion gzip)"
+                        return 1
+                    fi
+                    ;;
+                bz2)
+                    if ! command_exists bzip2; then
+                        error "未找到 bzip2"
+                        echo "安装建议: $(get_install_suggestion bzip2)"
+                        return 1
+                    fi
+                    ;;
+                xz)
+                    if ! command_exists xz; then
+                        error "未找到 xz"
+                        echo "安装建议: $(get_install_suggestion xz)"
+                        return 1
+                    fi
+                    ;;
+                zst)
+                    if ! command_exists zstd; then
+                        error "未找到 zstd"
+                        echo "安装建议: $(get_install_suggestion zstd)"
+                        return 1
+                    fi
+                    ;;
+                lz4)
+                    if ! command_exists lz4; then
+                        error "未找到 lz4"
+                        echo "安装建议: $(get_install_suggestion lz4)"
+                        return 1
+                    fi
+                    ;;
+            esac
+            ;;
+        zip)
+            if ! command_exists unzip; then
+                error "未找到 unzip"
+                echo "安装建议: $(get_install_suggestion unzip)"
+                return 1
+            fi
+            ;;
+        7z)
+            if ! command_exists 7z && ! command_exists 7za; then
+                error "未找到 7z"
+                echo "安装建议: $(get_install_suggestion p7zip)"
+                return 1
+            fi
+            ;;
+        rar)
+            if ! command_exists unrar && ! command_exists rar; then
+                error "未找到 unrar/rar"
+                echo "安装建议: $(get_install_suggestion unrar)"
+                return 1
+            fi
+            ;;
+        deb)
+            if ! command_exists ar; then
+                error "未找到 ar (binutils)"
+                echo "安装建议: $(get_install_suggestion binutils)"
+                return 1
+            fi
+            ;;
+        rpm)
+            if ! command_exists rpm2cpio || ! command_exists cpio; then
+                error "未找到 rpm2cpio 或 cpio"
+                echo "安装建议: $(get_install_suggestion rpm2cpio cpio)"
+                return 1
+            fi
+            ;;
+        asar)
+            if ! command_exists asar; then
+                error "未找到 asar"
+                echo "安装建议: npm install -g asar"
+                return 1
+            fi
+            ;;
+        *)
+            error "不支持的格式: $format"
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+# 执行解压
+do_extract() {
+    local file="$1"
+    local output_dir="$2"
+    local format="$3"
+
+    info "正在解压 $file 到 $output_dir/"
+
+    case "$format" in
+        tar)
+            tar -xf "$file" -C "$output_dir"
+            ;;
+        tar.gz)
+            tar -xzf "$file" -C "$output_dir"
+            ;;
+        tar.bz2)
+            tar -xjf "$file" -C "$output_dir"
+            ;;
+        tar.xz)
+            tar -xJf "$file" -C "$output_dir"
+            ;;
+        tar.zst)
+            tar --zstd -xf "$file" -C "$output_dir"
+            ;;
+        tar.lz4)
+            lz4 -d -c "$file" | tar -xf - -C "$output_dir"
+            ;;
+        gz)
+            # 单文件 gzip，解压到输出目录
+            local output_file="$output_dir/$(basename "${file%.gz}")"
+            gzip -dc "$file" > "$output_file"
+            ;;
+        bz2)
+            local output_file="$output_dir/$(basename "${file%.bz2}")"
+            bzip2 -dc "$file" > "$output_file"
+            ;;
+        xz)
+            local output_file="$output_dir/$(basename "${file%.xz}")"
+            xz -dc "$file" > "$output_file"
+            ;;
+        zst)
+            local output_file="$output_dir/$(basename "${file%.zst}")"
+            zstd -dc "$file" > "$output_file"
+            ;;
+        lz4)
+            local output_file="$output_dir/$(basename "${file%.lz4}")"
+            lz4 -dc "$file" > "$output_file"
+            ;;
+        zip)
+            unzip -q "$file" -d "$output_dir"
+            ;;
+        7z)
+            if command_exists 7z; then
+                7z x "$file" -o"$output_dir" -y > /dev/null
+            else
+                7za x "$file" -o"$output_dir" -y > /dev/null
+            fi
+            ;;
+        rar)
+            if command_exists unrar; then
+                unrar x "$file" "$output_dir/"
+            else
+                rar x "$file" "$output_dir/"
+            fi
+            ;;
+        deb)
+            # deb 是 ar 归档
+            mkdir -p "$output_dir/control"
+            mkdir -p "$output_dir/data"
+            ar -x "$file" --output="$output_dir"
+            # 解压 control.tar.* 和 data.tar.*
+            for f in "$output_dir"/*.tar.*; do
+                if [[ -f "$f" ]]; then
+                    local subname=$(basename "$f" | sed 's/\.tar\..*//')
+                    mkdir -p "$output_dir/$subname"
+                    tar -xf "$f" -C "$output_dir/$subname"
+                    rm "$f"
+                fi
+            done
+            ;;
+        rpm)
+            mkdir -p "$output_dir"
+            rpm2cpio "$file" | cpio -idmv -D "$output_dir" 2>/dev/null
+            ;;
+        asar)
+            asar extract "$file" "$output_dir"
+            ;;
+    esac
+}
+
+# 智能解压：如果顶层只有单独的文件/文件夹，则不创建新文件夹
+smart_extract_adjust() {
+    local output_dir="$1"
+    local original_dir="$2"
+
+    # 检查是否启用了智能解压
+    if [[ "$SMART_EXTRACT" != "true" ]]; then
+        return 1
+    fi
+
+    # 如果用户指定了自定义输出目录，不进行智能调整
+    if [[ "$original_dir" != "$output_dir" ]] && [[ -n "$original_dir" ]]; then
+        return 1
+    fi
+
+    # 获取顶层内容
+    local top_contents=("$output_dir"/*)
+    local top_count=0
+
+    # 计算顶层项目数量（排除隐藏文件）
+    for item in "${top_contents[@]}"; do
+        if [[ -e "$item" ]]; then
+            local basename=$(basename "$item")
+            if [[ "${basename}" != .* ]]; then
+                ((top_count++))
+            fi
+        fi
+    done
+
+    # 如果只有一个顶层项目
+    if [[ $top_count -eq 1 ]]; then
+        local single_item=""
+        for item in "${top_contents[@]}"; do
+            if [[ -e "$item" ]]; then
+                local basename=$(basename "$item")
+                if [[ "${basename}" != .* ]]; then
+                    single_item="$item"
+                    break
+                fi
+            fi
+        done
+
+        if [[ -n "$single_item" ]] && [[ -e "$single_item" ]]; then
+            local single_name=$(basename "$single_item")
+            local parent_dir=$(dirname "$output_dir")
+
+            info "检测到单项目归档，启用智能解压"
+
+            # 将项目移动到父目录
+            if [[ -e "$parent_dir/$single_name" ]]; then
+                if $OVERWRITE; then
+                    rm -rf "$parent_dir/$single_name"
+                    mv "$single_item" "$parent_dir/"
+                    rmdir "$output_dir" 2>/dev/null || true
+                    return 0
+                else
+                    warn "目标已存在: $parent_dir/$single_name，保持原结构"
+                    # 不再返回1，而是继续使用output_dir作为最终目录
+                    return 1
+                fi
+            fi
+
+            mv "$single_item" "$parent_dir/"
+            rmdir "$output_dir" 2>/dev/null || true
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# 解压主函数
+extract() {
+    local file="$1"
+    local custom_output="$2"
+    local is_temp_dir=false
+
+    # 检查文件是否存在
+    if [[ ! -f "$file" ]]; then
+        error "文件不存在: $file"
+        return 1
+    fi
+
+    # 检测格式
+    local format=$(detect_format "$file")
+
+    if [[ "$format" == "unknown" ]]; then
+        error "无法识别文件格式: $file"
+        return 1
+    fi
+
+    info "检测到格式: $format"
+
+    # 检查解压工具
+    if ! check_extract_tool "$format"; then
+        return 1
+    fi
+
+    # 确定输出目录
+    local output_dir
+    if [[ -n "$custom_output" ]]; then
+        output_dir="$custom_output"
+    else
+        output_dir=$(get_extract_dir "$file")
+    fi
+
+    # 如果目录已存在
+    if [[ -d "$output_dir" ]]; then
+        if $OVERWRITE; then
+            rm -rf "$output_dir"
+        else
+            warn "目录已存在: $output_dir"
+            if ! confirm "是否覆盖?" "n"; then
+                info "操作已取消"
+                return 0
+            fi
+            rm -rf "$output_dir"
+        fi
+    fi
+
+    # 创建输出目录
+    mkdir -p "$output_dir"
+
+    # 执行解压
+    if do_extract "$file" "$output_dir" "$format"; then
+        # 智能解压调整
+        if smart_extract_adjust "$output_dir" "$custom_output"; then
+            local final_dir=$(dirname "$output_dir")
+            local item_name=$(basename "$output_dir"/* 2>/dev/null | head -1)
+            if [[ -z "$item_name" ]]; then
+                final_dir="$output_dir"
+            else
+                final_dir="$final_dir/$item_name"
+            fi
+            success "解压完成: $final_dir/"
+            ls "$final_dir/" 2>/dev/null || true
+        else
+            success "解压完成: $output_dir/"
+            ls "$output_dir/"
+        fi
+
+        # 删除源文件
+        if $DELETE_SOURCE; then
+            warn "即将删除源文件: $file"
+            if confirm "确认删除?" "n"; then
+                rm -f "$file"
+                success "已删除源文件: $file"
+            else
+                info "跳过删除"
+            fi
+        fi
+
+        return 0
+    else
+        error "解压失败"
+        # 清理空目录
+        rmdir "$output_dir" 2>/dev/null || true
+        return 1
+    fi
+}
+
+# ============================================================================
+# 压缩功能
+# ============================================================================
+
+# 获取压缩格式
+get_compress_format() {
+    local archive="$1"
+    local lowername=$(echo "$archive" | tr '[:upper:]' '[:lower:]')
+
+    case "$lowername" in
+        *.tar.gz|*.tgz)
+            echo "tar.gz"
+            ;;
+        *.tar.bz2|*.tbz2)
+            echo "tar.bz2"
+            ;;
+        *.tar.xz|*.txz)
+            echo "tar.xz"
+            ;;
+        *.tar.zst)
+            echo "tar.zst"
+            ;;
+        *.tar.lz4)
+            echo "tar.lz4"
+            ;;
+        *.tar)
+            echo "tar"
+            ;;
+        *.gz)
+            echo "gz"
+            ;;
+        *.bz2)
+            echo "bz2"
+            ;;
+        *.xz)
+            echo "xz"
+            ;;
+        *.zst)
+            echo "zst"
+            ;;
+        *.lz4)
+            echo "lz4"
+            ;;
+        *.zip)
+            echo "zip"
+            ;;
+        *.7z)
+            echo "7z"
+            ;;
+        *)
+            echo "unknown"
+            ;;
+    esac
+}
+
+# 检查压缩工具
+check_compress_tool() {
+    local format="$1"
+
+    case "$format" in
+        tar)
+            # tar 内置
+            ;;
+        tar.gz|gz)
+            if ! command_exists gzip; then
+                error "未找到 gzip"
+                echo "安装建议: $(get_install_suggestion gzip)"
+                return 1
+            fi
+            ;;
+        tar.bz2|bz2)
+            if ! command_exists bzip2; then
+                error "未找到 bzip2"
+                echo "安装建议: $(get_install_suggestion bzip2)"
+                return 1
+            fi
+            ;;
+        tar.xz|xz)
+            if ! command_exists xz; then
+                error "未找到 xz"
+                echo "安装建议: $(get_install_suggestion xz)"
+                return 1
+            fi
+            ;;
+        tar.zst|zst)
+            if ! command_exists zstd; then
+                error "未找到 zstd"
+                echo "安装建议: $(get_install_suggestion zstd)"
+                return 1
+            fi
+            ;;
+        tar.lz4|lz4)
+            if ! command_exists lz4; then
+                error "未找到 lz4"
+                echo "安装建议: $(get_install_suggestion lz4)"
+                return 1
+            fi
+            ;;
+        zip)
+            if ! command_exists zip; then
+                error "未找到 zip"
+                echo "安装建议: $(get_install_suggestion zip)"
+                return 1
+            fi
+            ;;
+        7z)
+            if ! command_exists 7z && ! command_exists 7za; then
+                error "未找到 7z"
+                echo "安装建议: $(get_install_suggestion p7zip)"
+                return 1
+            fi
+            ;;
+        *)
+            error "不支持的格式: $format"
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+# 获取排除模式
+get_exclude_patterns() {
+    local os=$(detect_os)
+    local patterns=()
+
+    # 通用排除 - 仅排除真正的缓存/临时文件
+    # 注意: .git, node_modules, .svn, .hg 等是项目必要文件，不应排除
+    patterns+=(
+        "--exclude=*.pyc"
+        "--exclude=__pycache__"
+        "--exclude=.DS_Store"
+        "--exclude=Thumbs.db"
+        "--exclude=*.swp"
+        "--exclude=*.swo"
+        "--exclude=*~"
+        "--exclude=.cache"
+        "--exclude=.tmp"
+        "--exclude=*.tmp"
+    )
+
+    # macOS 特定排除 - 系统生成的元数据文件
+    if [[ "$os" == "macos" ]]; then
+        patterns+=(
+            "--exclude=._*"
+            "--exclude=.fseventsd"
+            "--exclude=.Spotlight-V100"
+            "--exclude=.Trashes"
+        )
+    fi
+
+    echo "${patterns[@]}"
+}
+
+# 执行压缩
+do_compress() {
+    local source_dir="$1"
+    local archive="$2"
+    local format="$3"
+
+    info "正在压缩 $source_dir 到 $archive"
+
+    # 获取排除模式
+    local excludes=$(get_exclude_patterns)
+
+    case "$format" in
+        tar)
+            eval tar -cf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+            ;;
+        tar.gz)
+            eval tar -czf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+            ;;
+        tar.bz2)
+            eval tar -cjf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+            ;;
+        tar.xz)
+            eval tar -cJf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+            ;;
+        tar.zst)
+            eval tar --zstd -cf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+            ;;
+        tar.lz4)
+            # tar.lz4 需要管道方式
+            local excludes_str=""
+            for p in $excludes; do
+                excludes_str="$excludes_str $p"
+            done
+            eval tar -cf - $excludes_str -C "$(dirname "$source_dir")" "$(basename "$source_dir")" | lz4 > "$archive"
+            ;;
+        zip)
+            # zip 的排除语法不同
+            local zip_excludes=()
+            for p in $excludes; do
+                if [[ "$p" =~ ^--exclude=(.*)$ ]]; then
+                    zip_excludes+=("-x" "${BASH_REMATCH[1]}")
+                fi
+            done
+            cd "$(dirname "$source_dir")"
+            zip -r "$archive" "$(basename "$source_dir")" "${zip_excludes[@]}" > /dev/null
+            cd - > /dev/null
+            ;;
+        7z)
+            if command_exists 7z; then
+                7z a "$archive" "$source_dir" > /dev/null
+            else
+                7za a "$archive" "$source_dir" > /dev/null
+            fi
+            ;;
+        gz|bz2|xz|zst|lz4)
+            # 单文件压缩 - 只能压缩单个文件，这里打包整个目录
+            warn "格式 .$format 仅支持单文件压缩，将创建 .tar.$format 归档"
+            local new_archive="${archive%.*}.tar.${format}"
+            archive="$new_archive"
+            case "$format" in
+                gz)
+                    eval tar -czf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+                    ;;
+                bz2)
+                    eval tar -cjf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+                    ;;
+                xz)
+                    eval tar -cJf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+                    ;;
+                zst)
+                    eval tar --zstd -cf "$archive" $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")"
+                    ;;
+                lz4)
+                    eval tar -cf - $excludes -C "$(dirname "$source_dir")" "$(basename "$source_dir")" | lz4 > "$archive"
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+# 压缩主函数
+compress() {
+    local source_dir="$1"
+    local archive="$2"
+
+    # 检查源目录是否存在
+    if [[ ! -e "$source_dir" ]]; then
+        error "路径不存在: $source_dir"
+        return 1
+    fi
+
+    # 只支持目录
+    if [[ ! -d "$source_dir" ]]; then
+        error "只支持压缩目录，不支持单文件: $source_dir"
+        return 1
+    fi
+
+    # 获取压缩格式
+    local format=$(get_compress_format "$archive")
+
+    if [[ "$format" == "unknown" ]]; then
+        error "无法识别压缩格式，请使用明确的扩展名，如: .tar.gz, .zip, .7z"
+        return 1
+    fi
+
+    info "目标格式: $format"
+
+    # 检查压缩工具
+    if ! check_compress_tool "$format"; then
+        return 1
+    fi
+
+    # 处理同名压缩包
+    if [[ -f "$archive" ]]; then
+        warn "压缩包已存在: $archive"
+        echo "请选择:"
+        echo "  1. 输入新文件名"
+        echo "  2. 退出"
+        read -p "选择 [1/2]: " choice
+
+        case "$choice" in
+            1)
+                read -p "输入新的文件名: " new_archive
+                if [[ -z "$new_archive" ]]; then
+                    error "文件名不能为空"
+                    return 1
+                fi
+                archive="$new_archive"
+                ;;
+            *)
+                info "操作已取消"
+                return 0
+                ;;
+        esac
+    fi
+
+    # 执行压缩
+    if do_compress "$source_dir" "$archive" "$format"; then
+        success "压缩完成: $archive"
+
+        # 删除源目录
+        if $DELETE_SOURCE; then
+            warn "即将删除源目录: $source_dir"
+            if confirm "确认删除?" "n"; then
+                rm -rf "$source_dir"
+                success "已删除源目录: $source_dir"
+            else
+                info "跳过删除"
+            fi
+        fi
+
+        return 0
+    else
+        error "压缩失败"
+        return 1
+    fi
+}
+
+# ============================================================================
+# 列出压缩包内容
+# ============================================================================
+
+list_archive() {
+    local file="$1"
+
+    # 检查文件是否存在
+    if [[ ! -f "$file" ]]; then
+        error "文件不存在: $file"
+        return 1
+    fi
+
+    # 检测格式
+    local format=$(detect_format "$file")
+
+    if [[ "$format" == "unknown" ]]; then
+        error "无法识别文件格式: $file"
+        return 1
+    fi
+
+    info "格式: $format"
+    echo ""
+
+    case "$format" in
+        tar)
+            tar -tf "$file"
+            ;;
+        tar.gz|tgz)
+            tar -tzf "$file"
+            ;;
+        tar.bz2|tbz2)
+            tar -tjf "$file"
+            ;;
+        tar.xz|txz)
+            tar -tJf "$file"
+            ;;
+        tar.zst)
+            tar --zstd -tf "$file"
+            ;;
+        tar.lz4)
+            lz4 -d -c "$file" | tar -tf -
+            ;;
+        zip)
+            unzip -l "$file"
+            ;;
+        7z)
+            if command_exists 7z; then
+                7z l "$file"
+            else
+                7za l "$file"
+            fi
+            ;;
+        rar)
+            if command_exists unrar; then
+                unrar l "$file"
+            else
+                rar l "$file"
+            fi
+            ;;
+        gz|bz2|xz|zst|lz4)
+            # 单文件压缩，列出本身
+            info "单文件压缩格式，只包含一个文件:"
+            basename "$file" | sed "s/\.${format}$//"
+            ;;
+        deb)
+            ar -t "$file"
+            ;;
+        rpm)
+            rpm2cpio "$file" | cpio -t
+            ;;
+        asar)
+            asar list "$file"
+            ;;
+        *)
+            error "不支持列出此格式: $format"
+            return 1
+            ;;
+    esac
+}
+
+# ============================================================================
+# 测试压缩包完整性
+# ============================================================================
+
+test_archive() {
+    local file="$1"
+
+    # 检查文件是否存在
+    if [[ ! -f "$file" ]]; then
+        error "文件不存在: $file"
+        return 1
+    fi
+
+    # 检测格式
+    local format=$(detect_format "$file")
+
+    if [[ "$format" == "unknown" ]]; then
+        error "无法识别文件格式: $file"
+        return 1
+    fi
+
+    info "格式: $format"
+    info "正在测试完整性..."
+
+    case "$format" in
+        tar)
+            tar -tf "$file" > /dev/null 2>&1
+            ;;
+        tar.gz|tgz)
+            tar -tzf "$file" > /dev/null 2>&1
+            ;;
+        tar.bz2|tbz2)
+            tar -tjf "$file" > /dev/null 2>&1
+            ;;
+        tar.xz|txz)
+            tar -tJf "$file" > /dev/null 2>&1
+            ;;
+        tar.zst)
+            tar --zstd -tf "$file" > /dev/null 2>&1
+            ;;
+        tar.lz4)
+            lz4 -d -c "$file" | tar -tf - > /dev/null 2>&1
+            ;;
+        zip)
+            if command_exists unzip; then
+                unzip -t "$file" > /dev/null 2>&1
+            else
+                warn "未找到 unzip，跳过测试"
+                return 1
+            fi
+            ;;
+        7z)
+            if command_exists 7z; then
+                7z t "$file" > /dev/null 2>&1
+            else
+                7za t "$file" > /dev/null 2>&1
+            fi
+            ;;
+        rar)
+            if command_exists unrar; then
+                unrar t "$file" > /dev/null 2>&1
+            else
+                rar t "$file" > /dev/null 2>&1
+            fi
+            ;;
+        gz)
+            gzip -t "$file" 2>&1
+            ;;
+        bz2)
+            bzip2 -t "$file" 2>&1
+            ;;
+        xz)
+            xz -t "$file" 2>&1
+            ;;
+        zst)
+            zstd -t "$file" 2>&1
+            ;;
+        lz4)
+            lz4 -t "$file" 2>&1
+            ;;
+        deb)
+            ar -t "$file" > /dev/null 2>&1
+            ;;
+        rpm)
+            rpm -K "$file" > /dev/null 2>&1
+            ;;
+        asar)
+            asar list "$file" > /dev/null 2>&1
+            ;;
+        *)
+            error "不支持测试此格式: $format"
+            return 1
+            ;;
+    esac
+
+    if [[ $? -eq 0 ]]; then
+        success "压缩包完整，无错误"
+        return 0
+    else
+        error "压缩包可能已损坏"
+        return 1
+    fi
+}
+
+# ============================================================================
+# 主函数
+# ============================================================================
+
+main() {
+    if [[ $# -lt 1 ]]; then
+        show_help
+        exit 0
+    fi
+
+    local action=""
+    local source=""
+    local target=""
+
+    # 解析参数
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--version)
+                echo "pakm v${VERSION}"
+                exit 0
+                ;;
+            -d)
+                DELETE_SOURCE=true
+                shift
+                ;;
+            -o|--overwrite)
+                OVERWRITE=true
+                shift
+                ;;
+            -k|--keep)
+                KEEP_ARCHIVE=true
+                shift
+                ;;
+            -f|--force)
+                OVERWRITE=true
+                shift
+                ;;
+            -s|--no-smart)
+                SMART_EXTRACT=false
+                shift
+                ;;
+            x|c|l|t)
+                action="$1"
+                shift
+                ;;
+            *)
+                if [[ -z "$source" ]]; then
+                    source="$1"
+                elif [[ -z "$target" ]]; then
+                    target="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # 执行操作
+    case "$action" in
+        x)
+            if [[ -z "$source" ]]; then
+                error "请指定要解压的文件"
+                show_help
+                exit 1
+            fi
+            extract "$source" "$target"
+            ;;
+        c)
+            if [[ -z "$source" ]]; then
+                error "请指定要压缩的目录"
+                show_help
+                exit 1
+            fi
+            if [[ -z "$target" ]]; then
+                error "请指定压缩包名称"
+                show_help
+                exit 1
+            fi
+            compress "$source" "$target"
+            ;;
+        l)
+            if [[ -z "$source" ]]; then
+                error "请指定要列出的压缩包"
+                show_help
+                exit 1
+            fi
+            list_archive "$source"
+            ;;
+        t)
+            if [[ -z "$source" ]]; then
+                error "请指定要测试的压缩包"
+                show_help
+                exit 1
+            fi
+            test_archive "$source"
+            ;;
+        *)
+            error "未知操作: $action"
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

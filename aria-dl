@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_NAME="$(basename "$0")"
+
+usage() {
+  cat <<'EOF'
+aria2 分片下载脚本
+
+用法:
+  aria-dl [选项] <URL> [URL2 ...]
+
+默认行为:
+  直接传入 URL 即下载，默认参数等价于:
+  aria2c -x 16 -s 16 -k 1M -c --file-allocation=none --auto-file-renaming=false
+
+选项:
+  -h, --help                              显示帮助
+  -x, --max-connection-per-server <N>     单服务器最大连接数 (默认: 16)
+  -s, --split <N>                         分片数 (默认: 16)
+  -k, --min-split-size <SIZE>             最小分片大小 (默认: 1M)
+  -j, --max-concurrent-downloads <N>      并发下载任务数 (默认: 1)
+  -d, --dir <DIR>                         下载目录 (默认: 当前目录)
+  -o, --out <FILE>                        输出文件名（仅单 URL 时可用）
+  -a, --file-allocation <METHOD>          文件预分配: none/prealloc/falloc/trunc (默认: none)
+  -r, --auto-file-renaming <true|false>   自动改名避免重名 (默认: false)
+      --continue                          启用断点续传 (默认启用)
+      --no-continue                       关闭断点续传
+      --user-agent <UA>                   指定 User-Agent
+      --referer <URL>                     指定 Referer
+      --dry-run                           仅打印实际执行命令，不执行下载
+      --                                  后续参数原样透传给 aria2c
+
+示例:
+  aria-dl "https://example.com/file.zip"
+  aria-dl -x 32 -s 32 -k 2M -o rom.zip "https://example.com/rom.zip"
+  aria-dl -d ~/Downloads/roms "https://example.com/a.zip" "https://example.com/b.zip"
+  aria-dl "https://example.com/file.zip" -- --check-certificate=false
+EOF
+}
+
+err() {
+  printf 'Error: %s\n' "$*" >&2
+}
+
+is_pos_int() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+MAX_CONN=16
+SPLIT=16
+MIN_SPLIT_SIZE="1M"
+MAX_CONCURRENT=1
+OUT_DIR="."
+OUT_NAME=""
+FILE_ALLOCATION="none"
+AUTO_FILE_RENAMING="false"
+CONTINUE_DOWNLOAD="true"
+USER_AGENT=""
+REFERER=""
+DRY_RUN="false"
+
+URLS=()
+EXTRA_ARGS=()
+
+if ! command -v aria2c >/dev/null 2>&1; then
+  err "未检测到 aria2c，请先安装 aria2（例如: brew install aria2）"
+  exit 127
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -x|--max-connection-per-server)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      MAX_CONN="$2"
+      shift 2
+      ;;
+    -s|--split)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      SPLIT="$2"
+      shift 2
+      ;;
+    -k|--min-split-size)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      MIN_SPLIT_SIZE="$2"
+      shift 2
+      ;;
+    -j|--max-concurrent-downloads)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      MAX_CONCURRENT="$2"
+      shift 2
+      ;;
+    -d|--dir)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    -o|--out)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      OUT_NAME="$2"
+      shift 2
+      ;;
+    -a|--file-allocation)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      FILE_ALLOCATION="$2"
+      shift 2
+      ;;
+    -r|--auto-file-renaming)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      AUTO_FILE_RENAMING="$2"
+      shift 2
+      ;;
+    --continue)
+      CONTINUE_DOWNLOAD="true"
+      shift
+      ;;
+    --no-continue)
+      CONTINUE_DOWNLOAD="false"
+      shift
+      ;;
+    --user-agent)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      USER_AGENT="$2"
+      shift 2
+      ;;
+    --referer)
+      [[ $# -ge 2 ]] || { err "$1 需要一个参数"; exit 1; }
+      REFERER="$2"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN="true"
+      shift
+      ;;
+    --)
+      shift
+      if [[ $# -gt 0 ]]; then
+        EXTRA_ARGS+=("$@")
+      fi
+      break
+      ;;
+    -*)
+      err "未知参数: $1"
+      usage
+      exit 1
+      ;;
+    *)
+      URLS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if ! is_pos_int "$MAX_CONN"; then
+  err "--max-connection-per-server 必须是正整数"
+  exit 1
+fi
+if ! is_pos_int "$SPLIT"; then
+  err "--split 必须是正整数"
+  exit 1
+fi
+if ! is_pos_int "$MAX_CONCURRENT"; then
+  err "--max-concurrent-downloads 必须是正整数"
+  exit 1
+fi
+if [[ "$AUTO_FILE_RENAMING" != "true" && "$AUTO_FILE_RENAMING" != "false" ]]; then
+  err "--auto-file-renaming 只能是 true 或 false"
+  exit 1
+fi
+if [[ "$CONTINUE_DOWNLOAD" != "true" && "$CONTINUE_DOWNLOAD" != "false" ]]; then
+  err "--continue/--no-continue 参数无效"
+  exit 1
+fi
+if [[ ${#URLS[@]} -eq 0 ]]; then
+  err "请至少提供一个 URL"
+  usage
+  exit 1
+fi
+if [[ -n "$OUT_NAME" && ${#URLS[@]} -gt 1 ]]; then
+  err "使用 --out 时只能下载单个 URL"
+  exit 1
+fi
+
+CMD=(
+  aria2c
+  -x "$MAX_CONN"
+  -s "$SPLIT"
+  -k "$MIN_SPLIT_SIZE"
+  -j "$MAX_CONCURRENT"
+  --dir "$OUT_DIR"
+  --file-allocation="$FILE_ALLOCATION"
+  --auto-file-renaming="$AUTO_FILE_RENAMING"
+)
+
+if [[ "$CONTINUE_DOWNLOAD" == "true" ]]; then
+  CMD+=(-c)
+fi
+if [[ -n "$OUT_NAME" ]]; then
+  CMD+=(-o "$OUT_NAME")
+fi
+if [[ -n "$USER_AGENT" ]]; then
+  CMD+=(--user-agent "$USER_AGENT")
+fi
+if [[ -n "$REFERER" ]]; then
+  CMD+=(--referer "$REFERER")
+fi
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+  CMD+=("${EXTRA_ARGS[@]}")
+fi
+CMD+=("${URLS[@]}")
+
+printf '\n执行命令: '
+printf '%q ' "${CMD[@]}"
+printf '\n'
+
+if [[ "$DRY_RUN" == "true" ]]; then
+  exit 0
+fi
+
+"${CMD[@]}"
