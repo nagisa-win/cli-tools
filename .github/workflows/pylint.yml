@@ -7,7 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.8", "3.9", "3.10"]
+        # runner 已升级到 Ubuntu 26.04，setup-python 最低只能提供 3.10，3.8/3.9 已无法获取
+        python-version: ["3.10", "3.12"]
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
