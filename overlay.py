@@ -14,7 +14,8 @@ def overlay_images(base_path, overlay_path, output_path):
     
     # 对覆盖图进行缩放
     base_size = base_image.size
-    overlay_image = overlay_image.resize(base_size, Image.LANCZOS)
+    # Pillow 9.1+ 的写法；no-member 是 pylint 无法内省 C 扩展导致的假阳性
+    overlay_image = overlay_image.resize(base_size, Image.Resampling.LANCZOS)  # pylint: disable=no-member
 
     # 根据底图类型处理
     if "gif" in base_path:
