@@ -18,6 +18,8 @@ def main():
         sys.exit(1)
 
     icc_file = "~/workspace/HDR_IMG/HDR.icc"
+    # 先初始化，避免分支外使用时被判定为可能未赋值
+    input_img = output_img = ""
     if len(sys.argv) == 4:
         input_img, icc_file, output_img = sys.argv[1:4]
     if len(sys.argv) == 3:

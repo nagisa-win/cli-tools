@@ -1,0 +1,10 @@
+[MAIN]
+# 第三方脚本，不在本仓库的 lint 范围内
+ignore=pyinstxtractor.py
+
+[MESSAGES CONTROL]
+# CI 只对 error 级问题门禁；命名、注释、行宽等风格与重构建议交给本地工具处理
+disable=
+    C,
+    R,
+    W

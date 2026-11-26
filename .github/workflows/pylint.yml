@@ -18,7 +18,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pylint
+        # 装上脚本实际用到的第三方库，否则 pylint 会报 import-error 假阳性
+        pip install pylint pillow openai python-dotenv chardet
     - name: Analysing the code with pylint
       run: |
         pylint $(git ls-files '*.py')
